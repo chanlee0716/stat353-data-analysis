@@ -1,0 +1,803 @@
+---
+title: "Final Exam"
+subtitle: |
+  | Advanced Regression (STAT 355-0)
+  | Winter 2025
+author: "Chan Lee"
+pagetitle: "Final Exam: Chan Lee"
+date: today
+
+format:
+  html:
+    toc: true
+    toc-depth: 4
+    toc-location: left
+    embed-resources: true
+    code-fold: false
+    link-external-newwindow: true
+    theme: cosmo
+
+execute:
+  warning: false
+
+from: markdown+emoji
+reference-location: margin
+citation-location: margin
+---
+
+::: {.callout-tip icon=false}
+
+## Github Repo Link
+
+[https://github.com/stat-353-0-2025-winter/final-353-chanlee0716.git](https://github.com/stat-353-0-2025-winter/final-353-chanlee0716.git)
+
+:::
+
+## An Overview of the Problem
+
+Homelessness remains a critical issue across the United States, affecting hundreds of thousands of individuals each year. Despite numerous efforts to address the problem, recent data indicates that the number of homeless individuals has been increasing in several major metropolitan areas. Understanding the factors that contribute to homelessness is crucial for developing effective policies to mitigate this growing crisis.
+
+## The Data
+
+The data for this exam is sourced from the U.S. Department of Housing and Urban Development (HUD) and the U.S. Census Bureau, encompassing variables related to housing market conditions, economic factors, social safety nets, demographic characteristics, and climate data, all of which are critical in analyzing homelessness across various communities.
+
+All of the information that you need to understand this data is provided in the `data/` sub-directory. This includes:
+
+- `05b_analysis_file_update.csv` : The data
+- `HUD TO3 - 05b Analysis File - Data Dictionary.xlsx` : The data dictionary
+
+## This Exam 
+ 
+For this exam, we will focus in particular on one outcome:
+
+  - `homelessness_rate`^[Not included in the data and must be calculated]: This represents the rate of homeless individuals as counted during the annual PIT survey. It is calculated by dividing the variable `pit_tot_hless_pit_hud` by `dem_pop_pop_census`, focusing exclusively on the **year 2017**.
+  
+::: {.callout-note}
+
+**A strong exam is one that is judicious in what is presented (you can put materials in an Appendix), that explains the decisions and assumptions that were made and why, that explains how the results should be interpreted, and that is clear in any limitations.**
+
+Put another way, there is no single right answer to this analysis problem. There are many suitable approaches. Of course, there are approaches that are clearly not suitable too. The key is to concisely explain your work and provide evidence and/or sound reasoning for why your approach is appropriate. This includes identifying issues or limitations with your approach. 
+
+As George Box said, "All models are wrong, but some are useful."
+
+:::  
+
+## Questions
+
+```{r, echo= FALSE}
+# Load packages
+library(MASS)
+library(ggplot2)
+library(car)
+library(lme4) # needed for modelling with random effects
+library(tidyverse); library(dplyr); library(broom)
+library(patchwork); library(gridExtra); library(grid)
+library(janitor); library(splines)
+library(glmnet)
+library(caret)
+library(pROC)
+
+# Reading in the csv file
+data <- read.csv("data/05b_analysis_file_update.csv")
+
+# Preparing data
+data$homelessness_rate <- data$pit_tot_hless_pit_hud / data$dem_pop_pop_census
+data_2017 <- data[data$year == 2017, ]
+data_2017 <- data_2017[!is.na(data_2017$homelessness_rate), ] # lose two rows
+```
+
+### Question 1
+
+After exploring the outcome, what type of regression model might you use to for `homelessness_rate`? Explain your choice. If you considered more than one type, explain how you arrived at each and how you made your final decision. 
+
+::: {.callout-tip icon="false"}
+## Solution
+
+I found that homelessness_rate was heavily right-skewed, so I normalized
+the response variable (via both log and logit transformations). Both transformations
+seemed to reasonably normalize the response variable, so I chose
+the logit transformation over the log transformation,
+because the response variable is a proportion and is bounded between 0 and 1: 
+two conditions under which a logit transformation is highly appropriate. Then, 
+I decided to perform an **OLS regression on the logit-transformed-homelessness_rate variable**,
+after checking that all the normality assumptions were reasonably met when using this model 
+(see Appendix A for diagnostic plots).
+
+```{r, echo = FALSE}
+g1 <- ggplot(data = data_2017, aes(x = homelessness_rate)) +
+  geom_density()
+
+data_2017$homelessness_rate_log <- log(data_2017$homelessness_rate)
+g2 <- ggplot(data = data_2017, aes(x = homelessness_rate_log)) +
+  geom_density()
+
+
+# 1) Small epsilon adjustment if needed (avoid exactly 0 or 1)
+epsilon <- 1e-6
+data_2017$homelessness_rate_adj <- 
+  pmin(pmax(data_2017$homelessness_rate, epsilon), 1 - epsilon)
+
+# 2) Logit transform
+data_2017$homelessness_rate_logit <- log(
+  data_2017$homelessness_rate_adj / (1 - data_2017$homelessness_rate_adj)
+)
+g3 <- ggplot(data = data_2017, aes(x = homelessness_rate_logit)) +
+  geom_density()
+```
+
+:::
+
+### Question 2
+
+The variable `homelessness_rate` represents the rate of homeless individuals per population unit. You hypothesize that the following variables may be associated with this outcome:
+
+- `econ_labor_unemp_rate_BLS`: Unemployment rate
+- `dem_soc_ed_hsgrad_acs5yr_2017`: Percentage of the population that are high school graduates in the
+population unit
+- `econ_labor_medinc_acs5yr_2017`: Median income in the population unit
+- `hou_mkt_medrent_acs5yr_2017`: Median rent in the population unit
+- `env_wea_avgtemp_summer_noaa`: Average summer temperature (June, July, August)
+
+Please perform an analysis to evaluate the relationship between these variables and the `homelessness_rate`. Be sure to interpret your findings and draw clear conclusions based on your analysis.
+
+::: {.callout-tip icon="false"}
+## Solution
+From our OLS analysis, we find that
+
+- Holding all other variables constant, a statistically significant relationship ($p<0.001$)
+indicates that higher unemployment rates are associated with higher homelessness rates.
+Specifically, a one percentage point increase in unemployment rate is
+associated with a $111$% increase in the odds of homelessness.
+
+- Holding all other variables constant, a statistically significant relationship ($p<0.001$) 
+shows that a one percentage point increase in the percentage of high school graduates is associated with a $7.7$% increase in the odds of homelessness. This result is counterintuitive, as higher education levels typically correlate with economic stability. However, this relationship must be interpreted with caution, as it interacts with the unemployment rate.
+
+- Holding all other variables constant, a statistically significant relationship ($p<0.001$) indicates
+that a $\$10,000$ increase in median income is associated with a $28$% decrease in the odds of homelessness.
+This suggests that wealthier areas tend to have lower homelessness rates, even when unemployment, 
+education levels, and rent costs remain the same.
+
+- Holding all other variables constant, a statistically significant relationship ($p<0.001$) 
+indicates that a $\$100$ increase in median rent is associated with a 
+$33$% increase in the odds of homelessness. This highlights the importance of 
+housing affordability: areas with higher rental costs experience significantly 
+higher homelessness rates, even after adjusting for employment, income, and education.
+
+- Holding all other variables constant, a statistically significant relationship ($p<0.001$) 
+indicates that a $1$ degree increase in Farenheit in average summer temperature is
+associated with a $3$% decrease in the odds of homelessness. This may suggest that 
+warmer climates experience lower visible homelessness rates, potentially because 
+unsheltered individuals in colder areas are more likely to seek formal shelters, 
+which affects how homelessness is counted (although the true cause is uncertain).
+
+Note that the effect of unemployment on homelessness depends on income and education levels:
+
+- Holding high school graduation rates, median rent, and summer temperature constant, 
+an increase in unemployment in low-income areas leads to higher homelessness rates 
+compared to high-income areas, suggesting that wealthier areas may have economic 
+safety nets that mitigate the impact of job loss.
+
+- Holding median income, median rent, and summer temperature constant, an increase 
+in unemployment in low-education areas results in higher homelessness rates compared 
+to areas with more high school graduates, suggesting that education 
+may serve as a protective factor against homelessness, possibly by improving job 
+prospects and economic resilience.
+
+In summary, our model is (for all observations $j$, and assuming $\varepsilon_j$ 
+is normal)
+$$
+\begin{aligned}
+&\text{homelessness\_rate\_logit}_j = \beta_0 + \beta_1\, \text{econ\_labor\_unemp\_rate\_BLS}_j \\
+&+ \beta_2\, \text{dem\_soc\_ed\_hsgrad\_acs5yr\_2017}_j \\
+&+ \beta_3\, \text{econ\_labor\_medinc\_acs5yr\_2017}_j \\ 
+&+ \beta_4\, \text{hou\_mkt\_medrent\_acs5yr\_2017}_j \\ 
+&+ \beta_5\, \text{env\_wea\_avgtemp\_summer\_noaa}_j \\
+&+ \beta_6\, \Bigl(\text{econ\_labor\_unemp\_rate\_BLS}_j \times \text{econ\_labor\_medinc\_acs5yr\_2017}_j\Bigr) \\
+&+ \beta_7\, \Bigl(\text{econ\_labor\_unemp\_rate\_BLS}_j \times \text{dem\_soc\_ed\_hsgrad\_acs5yr\_2017}_j\Bigr) \\
+&+ \varepsilon_j
+\end{aligned}
+$$
+A residual standard error of $0.5298$ suggests a moderate spread in residuals, and
+an F statistic of $46.97 (p < 2.2e-16)$ suggests that the model is highly significant
+in predicting homelessness_rate_logit. To add on, the model has an adjusted $R^2$ value 
+of $0.4632$, which is reasonable but leaves room for improvement.
+
+```{r, echo = FALSE}
+data_2017 <- data_2017[-1880, ]
+
+model <- lm(homelessness_rate_logit ~ 
+                   econ_labor_unemp_rate_BLS + 
+                   dem_soc_ed_hsgrad_acs5yr_2017 +
+                   econ_labor_medinc_acs5yr_2017 +
+                   hou_mkt_medrent_acs5yr_2017 +
+                   env_wea_avgtemp_summer_noaa +
+                   econ_labor_unemp_rate_BLS:econ_labor_medinc_acs5yr_2017 +
+                   econ_labor_unemp_rate_BLS:dem_soc_ed_hsgrad_acs5yr_2017, 
+                   data = data_2017)
+```
+:::
+
+
+### Question 3
+
+Are there any non-linearities in these relationships explored in Question 2? Investigate and explain.
+
+::: {.callout-tip icon="false"}
+## Solution
+
+By plotting partial residual plots for each predictor (excluding the interaction terms),
+we see that the homelessness_rate_logit is linear in all the non-interaction terms (see Appendix B).
+In addition, the lack of patterns in the residuals as seen in the residual vs fitted plot 
+in our previous diagnostic plots (see Appendix A) gives further evidence for the lack of non-linearity in homelessness_rate_logit. 
+
+Furthermore, by performing anova tests comparing the original model with extended
+models that include quadratic and cubic interaction effect and main effect terms,
+we see that there isn't sufficient evidence to conclude that we need quadratic or cubic
+interaction effect or main effect terms. Specifically, when comparing the base linear 
+model with the model including quadratic interaction terms, the p-value was 0.3568, 
+indicating that adding those terms does not significantly reduce residual variance. 
+Similarly, adding quadratic terms for main effects produced a p-value of 0.4414, and 
+including additional quadratic interaction terms yielded a p-value of 0.4654 - both being
+significantly higher than the 0.05 threshold. Further, the comparisons between 
+quadratic and cubic models for both main effects (p = 0.3776) and interactions (p = 0.5687) were not statistically significant. In summary, these results suggest that incorporating quadratic or cubic non-linearities is unnecessary, and the relationships between the predictors and the logit-transformed 
+homelessness rate are adequately modeled by a linear specification with the existing interactions
+(see Appendix B for detailed anova test results).
+
+Given all of this evidence, we conclude that it is not necessary to model any of the 
+relationships explored in question 2 as nonlinear
+:::
+
+
+### Question 4
+
+How do these effects vary between rural and non-rural areas (suburban and major cities)? Use the variable `rural` (an indicator of rural areas) to explore these differences. Interpret your findings and discuss any significant variations you observe.
+
+::: {.callout-tip icon="false"}
+## Solution
+
+The combined model indicates that, holding all other variables constant, higher 
+unemployment rates, higher high school graduation rates, and higher median rents 
+are associated with increases in the logit‐transformed homelessness rate. 
+In contrast, higher median income and warmer summer temperatures are linked to decreases in homelessness.
+
+For non‐rural areas, a one percentage point increase in unemployment 
+is associated with roughly a $2.28$-fold increase in the odds of homelessness. 
+Similarly, a one percentage point increase in the high school graduation rate is 
+associated with an approximate 8.5% increase in the odds, while a $100 increase in 
+median rent increases the odds by about 26.8%. Conversely, 
+increases in median income and average summer temperature reduce the odds of homelessness, 
+with their effects being statistically significant.
+
+Regarding rural differences, the interaction terms reveal that most of the effects are
+similar across rural and non‐rural areas—except for median rent, where the significant
+rural interaction (coefficient 0.2133, $p=0.000118$) indicates that the positive effect of
+rising rents on homelessness is even stronger in rural areas. 
+
+Additionally, the model includes significant interactions between unemployment and both education and median income. These negative interaction coefficients imply that the effect of unemployment on homelessness is moderated by these factors—its impact on the log-odds of homelessness becomes slightly less pronounced at higher levels of high school graduation or median income.
+
+Overall, the model explains about 49% of the variability in the logit-transformed homelessness rate 
+(Adjusted $R^2$ of roughly 0.49) and is statistically significant (F-statistic: 28.54, p<0.00001).
+Full regression results are provided in Appendix C.
+:::
+
+
+### Question 5 
+
+Examining the data^[Only consider data from the year 2017.], there are many other possible variables that could be used to model homelessness rates (`homelessness_rate`) than those hypothesized in #2. Develop a strategy and implement it to develop the best model for predicting homelessness rates. How well does this model predict homelessness rates? How much better (or worse) at predicting homelessness rates is it than the model developed in #2? 
+
+::: {.callout-tip icon="false"}
+
+Firstly, I removed any predictors that are collinear with others by checking
+with estimates have NA values when modelling OLS with homelessness_rate_logit as the
+response and all other variables as predictors. After this, I removed variables with 
+$>50$% of the observations missing data points, as this threshold seemed reasonable
+for completely removing a variable rather than imputing missing data points.
+Then, I performed variable selection using lasso, and using the set of variables
+lasso gave me, I performed subsequent anova tests to see which of these are the most significant.
+From this process, I get that the significant predictors are:
+
+- `pit_ind_unshelt_pit_hud` = individuals unsheltered
+- `econ_sn_ssi_part_rate_SSA` = SSI participation rate (ssi participants/census population)
+- `pit_ind_unshelt_pit_hud:econ_sn_ssi_part_rate_SSA` = interaction between former two variables
+- `pit_ind_unshelt_pit_hud:ln_hou_mkt_medrent_xt` = interaction between individuals sheltered and log of median rent
+- `hou_pol_totalind_hud:dem_pop_adult_census` = interaction between length of time homeless and total popn. aged 20-64
+- `dem_pop_male_census:dem_pop_adult_census` = interaction between total popn. aged 20-64 and total male popn.
+- `econ_sn_ssi_part_rate_SSA:ln_hou_mkt_medrent_xt` = interaction between SSI participation rate and log of median rent
+
+Hence, we get the new model:
+
+\begin{aligned}
+& \text{homelessness\_rate\_logit}_j^{modellasso} = \beta_0 + \beta_1 \text{pit\_ind\_unshelt\_pit\_hud}_j \\
+&+ \beta_2 \text{econ\_sn\_ssi\_part\_rate\_SSA}_j \\
+&+ \beta_3 \Bigl(\text{pit\_ind\_unshelt\_pit\_hud}_j \times \text{econ\_sn\_ssi\_part\_rate\_SSA}_j\Bigr) \\
+&+ \beta_4 \Bigl(\text{pit\_ind\_unshelt\_pit\_hud}_j \times \text{ln\_hou\_mkt\_medrent\_xt}_j\Bigr) \\
+&+ \beta_5 \Bigl(\text{hou\_pol\_totalind\_hud}_j \times \text{dem\_pop\_adult\_census}_j\Bigr) \\
+&+ \beta_6 \Bigl(\text{dem\_pop\_male\_census}_j \times \text{dem\_pop\_adult\_census}_j\Bigr) \\
+&+ \beta_7 \Bigl(\text{econ\_sn\_ssi\_part\_rate\_SSA}_j \times \text{ln\_hou\_mkt\_medrent\_xt}_j\Bigr) \\
+&+ \varepsilon_j
+
+\end{aligned}
+
+for all observations $j$ and where $\varepsilon_j$ meets normality assumptions. 
+
+We then compare this model with our original model from question 2 using metrics
+such as the adjusted $R^2$, RSE, and cross validation RMSE values. 
+It is clear that the model we built using lasso variable selection is a better 
+fit and has less training and predicted test error for the response homelessness_rate_logit.
+More specifically it explains around $63.3$% of the variance in logit-transformed homelessness rates, has an RSE of $0.438$, and has RMSE of $0.45$. On the other hand, our original model explains
+only about $46.3$% of the variance in logit-transformed homelessness rates, has a higher 
+RSE of $0.53$, and a higher RMSE of around $0.53$ (see appendix B for summary of results).
+Hence, we see that $modellasso$ is a far better model than our original model, and thus
+should supplant our original model.
+:::
+
+### Question 6
+
+Imagine that based upon your results in #5, the model you develop will be used by federal agencies to direct block grants^[A grant which allows local authorities to decide how the funds will be used.] for assisting with homelessness. Would you suggest your model for this use? Explain. 
+
+Suppose the model you develop will also be used by federal agencies to direct funds to specific causes of homelessness. Would you suggest your model for this use? Explain.
+
+::: {.callout-tip icon="false"}
+## Solution
+
+I would recommend my final LASSO-selected model for directing block grants to assist 
+with homelessness, as it effectively identifies key predictors of homelessness rates, 
+balancing simplicity with predictive accuracy. However, I would not recommend using this 
+model to allocate funds to specific causes of homelessness, because LASSO prioritizes statistical 
+predictive performance over causal interpretation, meaning the relationships identified may not 
+directly reflect underlying causal mechanisms. A deeper causal analysis would be necessary
+before directing funding toward particular causes based solely on these results.
+Therefore, use the model primarily as an initial screening tool, supplemented by qualitative 
+assessments and local knowledge to ensure funds are distributed effectively, equitably, and responsibly.
+:::
+
+
+## Appendix
+
+### Appendix A (OLS Diagnostic Plots + Summary of Model)
+
+As mentioned in Question 1 and 2, we tested whether OLS regression was suitable to model homelessness_rate_logit against the aforementioned predictors, by running diagnostic tests to check if the linearity
+assumptions were met (see below). We found that all the normality conditions were 
+sufficiently met, after removing a single outlier whose value for almost every variable was NA.
+
+::: {.callout-tip icon="false"}
+## Diagnostic Plots
+
+```{r, echo = FALSE}
+
+# Set up the plotting layout: 2 rows, 1st row with 2 plots, 2nd row with 1 plot
+layout(matrix(c(1, 2), 2, 1, byrow = TRUE), heights = c(1, 2))  # First row gets half the height, second row gets double
+
+# First row: Check homoscedasticity (Residuals vs Fitted) and Normality of Residuals (QQ plot)
+par(mfrow = c(1, 2))  # Set this row to 1 row, 2 columns for side-by-side plots
+
+# Residuals vs Fitted
+plot(fitted(model), resid(model),
+     main = "Residuals vs Fitted",
+     xlab = "Fitted Values",
+     ylab = "Residuals")
+abline(h = 0, col = "red")
+
+# QQ plot for normality of residuals
+qqnorm(resid(model))
+qqline(resid(model), col = "red")
+
+# Reset the layout for the second row
+par(mfrow = c(1, 1))  # Set back to 1 plot per row
+
+# Second row: Diagnostic plots for outliers
+# Outlier Test
+outlierTest(model)
+
+# Influence Index Plot
+influenceIndexPlot(model)
+```
+:::
+
+::: {.callout-tip icon="false"}
+## Summary of Model
+```{r, echo=FALSE}
+summary(model)
+```
+:::
+
+### Appendix B (Testing NonLinearities in Partial Relationships)
+
+::: {.callout-tip icon="false"}
+## Partial Residual Plots (excluding interaction terms)
+
+```{r, echo = FALSE}
+# Set up the plotting layout to have 2 rows and 3 columns
+par(mfrow = c(2, 3))
+
+# Generate component-plus-residual plots (ignoring interactions)
+termplot(model, partial.resid = TRUE, se = TRUE, smooth = panel.smooth, ask = FALSE)
+```
+:::
+
+::: {.callout-tip icon="false"}
+## Anova Test Results
+#### Comparing original model with model having quadratic terms for interaction effects
+```{r, echo = FALSE}
+# --- add quadratic terms for interaction effects
+model_nonlinear_inter <- lm(homelessness_rate_logit ~ econ_labor_unemp_rate_BLS +
+                                                   dem_soc_ed_hsgrad_acs5yr_2017 +
+                                                   econ_labor_medinc_acs5yr_2017 +
+                                                   hou_mkt_medrent_acs5yr_2017 +
+                                                   env_wea_avgtemp_summer_noaa +
+                                                   econ_labor_unemp_rate_BLS:dem_soc_ed_hsgrad_acs5yr_2017 +
+                                                   econ_labor_unemp_rate_BLS:econ_labor_medinc_acs5yr_2017 +
+                                                   I(econ_labor_unemp_rate_BLS^2 * dem_soc_ed_hsgrad_acs5yr_2017) +
+                                                   I(econ_labor_unemp_rate_BLS * dem_soc_ed_hsgrad_acs5yr_2017^2),
+                              data = data_2017)
+anova(model, model_nonlinear_inter)
+```
+
+#### Comparing original model with model having quadratic terms for main effects
+
+```{r, echo = FALSE}
+# --- Step 2: Add Quadratic Terms for Main Effects ---
+model_quad_main <- lm(homelessness_rate_logit ~ 
+                      econ_labor_unemp_rate_BLS + I(econ_labor_unemp_rate_BLS^2) +
+                      dem_soc_ed_hsgrad_acs5yr_2017 + I(dem_soc_ed_hsgrad_acs5yr_2017^2) +
+                      econ_labor_medinc_acs5yr_2017 + I(econ_labor_medinc_acs5yr_2017^2) +
+                      hou_mkt_medrent_acs5yr_2017 + I(hou_mkt_medrent_acs5yr_2017^2) +
+                      env_wea_avgtemp_summer_noaa + I(env_wea_avgtemp_summer_noaa^2) +
+                      econ_labor_unemp_rate_BLS:dem_soc_ed_hsgrad_acs5yr_2017 +
+                      econ_labor_unemp_rate_BLS:econ_labor_medinc_acs5yr_2017,
+                      data = data_2017)
+anova(model, model_quad_main)  # Test quadratic main effects
+```
+
+#### Comparing original model with model having quadratic terms for main & interaction effects
+```{r, echo = FALSE}
+# --- Step 3: Add Quadratic Terms for Interaction Effects ---
+model_quad_inter <- lm(homelessness_rate_logit ~ 
+                       econ_labor_unemp_rate_BLS + I(econ_labor_unemp_rate_BLS^2) +
+                       dem_soc_ed_hsgrad_acs5yr_2017 + I(dem_soc_ed_hsgrad_acs5yr_2017^2) +
+                       econ_labor_medinc_acs5yr_2017 + I(econ_labor_medinc_acs5yr_2017^2) +
+                       hou_mkt_medrent_acs5yr_2017 + I(hou_mkt_medrent_acs5yr_2017^2) +
+                       env_wea_avgtemp_summer_noaa + I(env_wea_avgtemp_summer_noaa^2) +
+                       econ_labor_unemp_rate_BLS:dem_soc_ed_hsgrad_acs5yr_2017 +
+                       I(econ_labor_unemp_rate_BLS^2 * dem_soc_ed_hsgrad_acs5yr_2017) +
+                       econ_labor_unemp_rate_BLS:econ_labor_medinc_acs5yr_2017 +
+                       I(econ_labor_unemp_rate_BLS * econ_labor_medinc_acs5yr_2017^2),
+                       data = data_2017)
+anova(model, model_quad_inter) # Test quadratic interaction effects
+```
+
+#### Comparing original model with model having cubic terms for main effects
+
+```{r, echo = FALSE}
+# --- Step 4: Add Cubic Terms for Main Effects ---
+model_cubic_main <- lm(homelessness_rate_logit ~ 
+                       econ_labor_unemp_rate_BLS + I(econ_labor_unemp_rate_BLS^2) + I(econ_labor_unemp_rate_BLS^3) +
+                       dem_soc_ed_hsgrad_acs5yr_2017 + I(dem_soc_ed_hsgrad_acs5yr_2017^2) + I(dem_soc_ed_hsgrad_acs5yr_2017^3) +
+                       econ_labor_medinc_acs5yr_2017 + I(econ_labor_medinc_acs5yr_2017^2) + I(econ_labor_medinc_acs5yr_2017^3) +
+                       hou_mkt_medrent_acs5yr_2017 + I(hou_mkt_medrent_acs5yr_2017^2) + I(hou_mkt_medrent_acs5yr_2017^3) +
+                       env_wea_avgtemp_summer_noaa + I(env_wea_avgtemp_summer_noaa^2) + I(env_wea_avgtemp_summer_noaa^3) +
+                       econ_labor_unemp_rate_BLS:dem_soc_ed_hsgrad_acs5yr_2017 +
+                       econ_labor_unemp_rate_BLS:econ_labor_medinc_acs5yr_2017,
+                       data = data_2017)
+anova(model_quad_main, model_cubic_main)  # Test cubic main effects
+```
+
+#### Comparing original model with model having cubic terms for interaction effects
+
+```{r, echo = FALSE}
+# --- Step 5: Add Cubic Terms for Interaction Effects ---
+model_cubic_inter <- lm(homelessness_rate_logit ~ 
+                        econ_labor_unemp_rate_BLS + I(econ_labor_unemp_rate_BLS^2) + I(econ_labor_unemp_rate_BLS^3) +
+                        dem_soc_ed_hsgrad_acs5yr_2017 + I(dem_soc_ed_hsgrad_acs5yr_2017^2) + I(dem_soc_ed_hsgrad_acs5yr_2017^3) +
+                        econ_labor_medinc_acs5yr_2017 + I(econ_labor_medinc_acs5yr_2017^2) + I(econ_labor_medinc_acs5yr_2017^3) +
+                        hou_mkt_medrent_acs5yr_2017 + I(hou_mkt_medrent_acs5yr_2017^2) + I(hou_mkt_medrent_acs5yr_2017^3) +
+                        env_wea_avgtemp_summer_noaa + I(env_wea_avgtemp_summer_noaa^2) + I(env_wea_avgtemp_summer_noaa^3) +
+                        econ_labor_unemp_rate_BLS:dem_soc_ed_hsgrad_acs5yr_2017 +
+                        I(econ_labor_unemp_rate_BLS^2 * dem_soc_ed_hsgrad_acs5yr_2017) +
+                        econ_labor_unemp_rate_BLS:econ_labor_medinc_acs5yr_2017 +
+                        I(econ_labor_unemp_rate_BLS * econ_labor_medinc_acs5yr_2017^2),
+                        data = data_2017)
+anova(model_quad_inter, model_cubic_inter)  # Test cubic interaction effects
+```
+:::
+
+### Appendix C (Summary of Testing How Effects Vary between Rural and Non-Rural Areas)
+::: {.callout-tip icon="false"}
+## Summary:
+```{r, echo = FALSE}
+# Fit a model that interacts rural with the main predictors.
+# (Note: Our base model 'model' is linear with two interactions already.)
+model_rural_inter <- lm(homelessness_rate_logit ~ 
+                        rural * (econ_labor_unemp_rate_BLS +
+                                 dem_soc_ed_hsgrad_acs5yr_2017 +
+                                 econ_labor_medinc_acs5yr_2017 +
+                                 hou_mkt_medrent_acs5yr_2017 +
+                                 env_wea_avgtemp_summer_noaa) +
+                        econ_labor_unemp_rate_BLS:dem_soc_ed_hsgrad_acs5yr_2017 +
+                        econ_labor_unemp_rate_BLS:econ_labor_medinc_acs5yr_2017,
+                        data = data_2017)
+summary(model_rural_inter)
+```
+:::
+
+### Appendix D (Question 5)
+::: {.callout-tip icon="false"}
+## Initial Variable Selection Using Lasso:
+```{r, echo = FALSE} 
+data_2017_2 <- data_2017
+#data_2017_2$state_abr <- as.factor(data_2017_2$state_abr)
+
+# obtain all possible predictor variables
+non_predictors <- c(
+  "homelessness_rate", "homelessness_rate_logit", 
+  "homelessness_rate_log", "homelessness_rate_adj", 
+  "homelessness_rate_density", "year", "ID", "cocnumber", "panelvar", "state_abr",
+  "pit_hless_pit_hud_share", "pit_tot_hless_pit_hud", "pit_hless_balance",
+  "missing", "pit_shelt_balance", "pit_unshelt_balance", "pit_shelt_pit_hud_share",
+  "pit_unshelt_pit_hud_share", "flag_d_hless", "flag_xt_hless", "flag_d_shelt",
+  "flag_xt_shelt", "flag_d_unshelt", "flag_xt_unshelt", "pit_ind_chronic_hless_pit_hud",
+  "pit_perfam_chronic_hless_pit_hud", "dem_pop_pop_census", "pit_tot_hless_pit_hud",
+  "pit_ind_hless_pit_hud",
+  "pit_perfam_shelt_pit_hud",
+  "pit_perfam_unshelt_pit_hud",
+  "pit_perfam_hless_pit_hud",
+  "coctag",
+  "hou_pol_perm_bed_hic_hud",
+  "hou_pol_temp_bed_hic_hud",
+  "dem_pop_female_census",
+  "dem_pop_senior_census",
+  "dem_soc_hispanic_census",
+  "dem_soc_ed_somecoll_acs5yr",
+  "econ_labor_unemp_pop_BLS",
+  "pit_hless_pit_hud_share",
+  "missing",
+  "dem_pop_male_census_share",
+  "dem_soc_white_census_share",
+  "dem_soc_other_census_share",
+  "dem_health_mhlth_chr_share_2017",
+  "dem_health_excesdrink_chr_2017",
+  "dem_health_ins_acs5yr_2017",
+  "dem_soc_ed_bach_acs5yr_2017",
+  "dem_soc_ed_somecoll_acs5yr_2017",
+  "dem_soc_ed_hsgrad_acs5yr_2017",
+  "dem_soc_ed_lesshs_acs5yr_2017",
+  "dem_soc_singparent_acs5yr_2017",
+  "dem_soc_singadult_acs5yr_2017",
+  "dem_soc_vet_acs5yr_2017",
+  "econ_labor_incineq_acs5yr_2017",
+  "econ_labor_topskill_acs5yr_2017",
+  "econ_labor_midskill_acs5yr_2017",
+  "econ_labor_unskill_acs5yr_2017",
+  "econ_labor_medinc_acs5yr_2017",
+  "econ_sn_cashasst_acs5yr_2017",
+  "hou_mkt_rentshare_acs5yr_2017",
+  "hou_mkt_rentvacancy_acs5yr_2017",
+  "hou_mkt_ovrcrowd_acs5yr_2017",
+  "hou_mkt_homeage_acs5yr_2017",
+  "hou_pol_hlessconduct_beg",
+  "cpi_2017",
+  "odd_flag",
+  "unbalance_flag",
+  "econ_labor_unskill_acs5yr_diff",
+  "econ_sn_cashasst_acs5yr_diff",
+  "hou_mkt_rentvacancy_acs5yr_diff",
+  "hou_mkt_homeage_acs5yr_diff",
+  "hou_mkt_homeage1940_acs5yr_2017",
+  "hou_mkt_homeval_acs5yr_2017",
+  "hou_mkt_medrent_acs5yr_2017",
+  "hou_mkt_utility_acs5yr_2017",
+  "hou_mkt_burden_own_acs5yr_2017",
+  "hou_mkt_burden_own_acs5yr_diff",
+  "hou_mkt_burden_sev_own_acs5yr_2017",
+  "hou_mkt_burden_sev_own_acs5yr_diff",
+  "hou_mkt_burden_rent_acs5yr_2017",
+  "hou_mkt_burden_sev_rent_acs5yr_2017",
+  "hou_mkt_burden_sev_rent_acs5yr_diff",
+  "fedfundcoc_flag",
+  "hou_mkt_homeval_xt",
+  "hou_mkt_burden_own_xt",
+  "hou_mkt_burden_sev_own_xt",
+  "hou_mkt_burden_rent_xt",
+  "hou_mkt_burden_sev_rent_xt",
+  "hou_mkt_homeage_xt",
+  "hou_mkt_homeage1940_xt",
+  "hou_mkt_medrent_xt",
+  "hou_mkt_utility_xt",
+  "hou_mkt_rentshare_xt",
+  "hou_mkt_rentvacancy_xt",
+  "hou_mkt_ovrcrowd_xt",
+  "econ_labor_midskill_xt",
+  "econ_labor_incineq_xt",
+  "hou_mkt_burden_sev_own_acs_2017",
+  "hou_mkt_burden_sev_own_acs_diff",
+  "hou_mkt_burden_sev_rent_acs_2017",
+  "hou_mkt_burden_sev_rent_acs_diff",
+  "econ_sn_cashasst_xt",
+  "dem_soc_ed_bach_xt",
+  "dem_soc_ed_somecoll_xt",
+  "dem_soc_ed_hsgrad_xt",
+  "dem_soc_ed_lesshs_xt",
+  "dem_health_ins_xt",
+  "dem_soc_singadult_xt",
+  "dem_soc_singparent_xt",
+  "dem_soc_vet_xt",
+  "d_hou_mkt_burden_sev_own_xt",
+  "d_hou_mkt_rentvacancy_xt",
+  "d_hou_mkt_ovrcrowd_xt",
+  "d_econ_sn_cashasst_xt",
+  "d_dem_soc_vet_xt",
+  "dem_soc_ed_lessbach_xt",
+  "tight_high_cost_rental_mkt",
+  "suburban",
+  "rural"
+)
+predictor_vars <- setdiff(names(data_2017_2), non_predictors)
+
+missing_threshold <- 0.5  # Set threshold (e.g., remove variables with >50% missing)
+predictor_vars <- predictor_vars[colMeans(is.na(data_2017_2[predictor_vars])) < missing_threshold]
+
+## Fit full model
+#data_clean <- na.omit(data_2017_2)
+#full_formula <- as.formula(paste("homelessness_rate_logit ~", paste(predictor_vars, collapse = " + ")))
+#full_model <- lm(full_formula, data = data_2017_2)
+#options(max.print = 99999); summary(full_model)
+
+## METHOD 1: use stepwise selection using AIC (both directions)
+#step_model <- stepAIC(full_model, direction = "both", trace = FALSE)
+#options(max.print = 99999); summary(step_model)
+
+#reduced_model <- lm(homelessness_rate_logit ~ pit_ind_unshelt_pit_hud + hou_pol_totalind_hud + dem_pop_male_census + dem_pop_adult_census + dem_soc_black_census + hou_mkt_medrent_acs5yr + hou_mkt_burden_rent_acs5yr + econ_sn_ssi_part_rate_SSA + dem_age_boom_census_2011 + dem_soc_black_census_share + dem_soc_pacific_census_share + dem_soc_racetwo_census_share + hou_mkt_homeval_acs5yr_diff + hou_mkt_medrent_acs5yr_2012 + hou_mkt_utility_acs5yr_diff + hou_mkt_burden_rent_acs5yr_2012 + ln_hou_mkt_medrent_xt + d_hou_mkt_burden_rent_xt + d_hou_mkt_medrent_xt + d_hou_pol_fedfundcoc, data = data_2017_2)
+#summary(reduced_model)
+
+#reduced_model_2 <- lm(homelessness_rate_logit ~ (pit_ind_unshelt_pit_hud + hou_pol_totalind_hud + dem_pop_male_census + dem_pop_adult_census + econ_sn_ssi_part_rate_SSA + dem_soc_black_census_share + dem_soc_racetwo_census_share + ln_hou_mkt_medrent_xt)^2, data = data_2017_2)
+#summary(reduced_model_2)
+
+#reduced_model_3 <- lm(homelessness_rate_logit ~ 
+#                        pit_ind_unshelt_pit_hud + 
+#                        econ_sn_ssi_part_rate_SSA + 
+#                        pit_ind_unshelt_pit_hud:hou_pol_totalind_hud + 
+#                        pit_ind_unshelt_pit_hud:dem_pop_male_census + 
+#                        pit_ind_unshelt_pit_hud:dem_pop_adult_census + 
+#                        pit_ind_unshelt_pit_hud:econ_sn_ssi_part_rate_SSA + 
+#                        pit_ind_unshelt_pit_hud:ln_hou_mkt_medrent_xt + 
+#                        hou_pol_totalind_hud:dem_pop_male_census + 
+#                        hou_pol_totalind_hud:dem_pop_adult_census + 
+#                        dem_pop_male_census:dem_pop_adult_census + 
+#                        econ_sn_ssi_part_rate_SSA:ln_hou_mkt_medrent_xt, 
+#                      data = data_2017_2)
+#summary(reduced_model_3)
+
+# got to this after multiple anova tests
+#reduced_model_4 <- lm(homelessness_rate_logit ~ 
+#                        pit_ind_unshelt_pit_hud + 
+#                        econ_sn_ssi_part_rate_SSA + 
+#                        pit_ind_unshelt_pit_hud:econ_sn_ssi_part_rate_SSA + 
+#                        pit_ind_unshelt_pit_hud:ln_hou_mkt_medrent_xt + 
+#                        hou_pol_totalind_hud:dem_pop_adult_census + 
+#                        dem_pop_male_census:dem_pop_adult_census + 
+#                        econ_sn_ssi_part_rate_SSA:ln_hou_mkt_medrent_xt, 
+#                      data = data_2017_2)
+#summary(reduced_model_4)
+
+######### LASSO ######### 
+set.seed(123)
+
+# Combine X and y into a single dataframe
+lasso_data <- data_2017_2[, c("homelessness_rate_logit", predictor_vars)]
+
+# Remove rows with any missing values
+lasso_data <- na.omit(lasso_data)
+
+# Redefine X and y after removing missing rows
+y <- lasso_data$homelessness_rate_logit
+X <- model.matrix(~ ., data = lasso_data)[, -1]  # Remove intercept column
+
+# Keep only rows where predictors are not missing
+valid_rows <- complete.cases(data_2017_2[predictor_vars])
+
+# Subset y and X accordingly
+y <- data_2017_2$homelessness_rate_logit[valid_rows]
+X <- model.matrix(~ ., data = data_2017_2[valid_rows, predictor_vars])[, -1]
+
+set.seed(123)
+cv_lasso <- cv.glmnet(X, y, alpha = 1)
+plot(cv_lasso)
+
+best_lambda <- cv_lasso$lambda.min
+lasso_model <- glmnet(X, y, alpha = 1, lambda = best_lambda)
+selected_vars <- rownames(coef(lasso_model))[coef(lasso_model)[, 1] != 0]
+
+cat("Selected Predictors:\n")
+print(setdiff(selected_vars, "(Intercept)"))
+```
+:::
+
+::: {.callout-tip icon="false"}
+## Summary of New Model:
+```{r, echo = FALSE}
+reduced_model_lasso <- lm(homelessness_rate_logit ~ 
+                        econ_urb_urbanicity + 
+                        hou_pol_bed_th_hic_hud +
+                        pit_miss +
+                        dem_pop_child_census_share +
+                        dem_soc_racetwo_census_share +
+                        dem_health_alcdeath_IMHE_2015 +
+                        econ_sn_cashasst_acs5yr_2012 +
+                        hou_mkt_rentshare_acs5yr_2012 +
+                        hou_mkt_burden_sev_own_acs_2012 +
+                        hou_pol_hudunit_psh_hud_share +
+                        d_fhfa_hpi_2009 +
+                        d_dem_pop_adult_census_share +
+                        d_dem_pop_female_census_share +
+                        d_env_wea_precip_noaa + 
+                        sub_west_coast +
+                        sub_west_census,
+                      data = data_2017_2)
+#summary(reduced_model_lasso)
+
+# add interactions
+reduced_model_lasso_1 <- lm(homelessness_rate_logit ~ 
+                        econ_urb_urbanicity + 
+                        pit_miss +
+                        dem_pop_child_census_share +
+                        dem_soc_racetwo_census_share +
+                        dem_health_alcdeath_IMHE_2015 +
+                        hou_mkt_burden_sev_own_acs_2012 +
+                        hou_pol_hudunit_psh_hud_share +
+                        d_fhfa_hpi_2009 +
+                        d_dem_pop_female_census_share +
+                        sub_west_coast +
+                        econ_urb_urbanicity:hou_mkt_burden_sev_own_acs_2012 + 
+                        d_dem_pop_adult_census_share:sub_west_coast   ,                      
+                        data = data_2017_2)
+summary(reduced_model_lasso_1)
+```
+:::
+
+```{r, echo = FALSE}
+#print(paste("Adjusted R-squared for Original Model:", round(summary(model)$adj.r.squared, 3)))
+#print(paste("Adjusted R-squared for Model using AIC Stepwise Selection:", round(summary(reduced_model_4)$adj.r.squared, 3)))
+#print(paste("Adjusted R-squared for Model using Lasso:", round(summary(reduced_model_lasso_1)$adj.r.squared, 3)))
+
+#print(paste("RSE for Original Model:", round(summary(model)$sigma, 3)))
+#print(paste("RSE for Model using AIC Stepwise Selection", round(summary(reduced_model_4)$sigma, 3)))
+#print(paste("RSE for Model using Lasso:", round(summary(reduced_model_lasso_1)$sigma, 3)))
+
+# 5. Cross-validation (10-Fold CV)
+train_control <- trainControl(method = "cv", number = 10)
+cv_model1 <- train(homelessness_rate_logit ~ econ_labor_unemp_rate_BLS + 
+                   dem_soc_ed_hsgrad_acs5yr_2017 +
+                   econ_labor_medinc_acs5yr_2017 +
+                   hou_mkt_medrent_acs5yr_2017 +
+                   env_wea_avgtemp_summer_noaa +
+                   econ_labor_unemp_rate_BLS:econ_labor_medinc_acs5yr_2017 +
+                   econ_labor_unemp_rate_BLS:dem_soc_ed_hsgrad_acs5yr_2017, data = data_2017_2, method = "lm", trControl = train_control)
+#cv_model2 <- train(homelessness_rate_logit ~ pit_ind_unshelt_pit_hud + 
+#                        econ_sn_ssi_part_rate_SSA + 
+#                        pit_ind_unshelt_pit_hud:econ_sn_ssi_part_rate_SSA + 
+#                        pit_ind_unshelt_pit_hud:ln_hou_mkt_medrent_xt + 
+#                        hou_pol_totalind_hud:dem_pop_adult_census + 
+#                        dem_pop_male_census:dem_pop_adult_census + 
+#                        econ_sn_ssi_part_rate_SSA:ln_hou_mkt_medrent_xt,
+#                   data = data_2017_2, method = "lm", trControl = train_control)
+cv_model3 <- train(homelessness_rate_logit ~ econ_urb_urbanicity + 
+                        pit_miss +
+                        dem_pop_child_census_share +
+                        dem_soc_racetwo_census_share +
+                        dem_health_alcdeath_IMHE_2015 +
+                        hou_mkt_burden_sev_own_acs_2012 +
+                        hou_pol_hudunit_psh_hud_share +
+                        d_fhfa_hpi_2009 +
+                        d_dem_pop_female_census_share +
+                        sub_west_coast +
+                        econ_urb_urbanicity:hou_mkt_burden_sev_own_acs_2012 + 
+                        d_dem_pop_adult_census_share:sub_west_coast, data = data_2017_2, method = "lm", trControl = train_control)
+
+
+#print("CV Results for Original Model:")
+#print(cv_model1$results$RMSE)
+#print("CV Results for Model using AIC Stepwise Selection:")
+#print(cv_model2$results$RMSE)
+#print("CV Results for Model using Lasso:")
+#print(cv_model3$results$RMSE)
+```
